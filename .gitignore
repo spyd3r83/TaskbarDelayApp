@@ -1,0 +1,67 @@
+# Ignore Visual Studio temporary files, build results, and
+# various other files created by the .NET build system.
+
+# Build results
+[Bb]in/
+[Oo]bj/
+
+# Rider project files
+.idea/
+
+# Visual Studio cache files
+.vs/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# MonoDevelop files
+*.userprefs
+
+# Mac cache files
+*.DS_Store
+
+# Visual Studio Code settings
+.vscode/
+
+# NuGet packages
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+
+# Dotnet watch auto-reload files
+*.hotreload
+
+# Resharper files
+_ReSharper*/
+*.[Rr]e[Ss]harper
+
+# StyleCop Code Analysis
+StyleCopReport.xml
+
+# NCrunch
+_NCrunch_*
+.*crunch*.local.xml
+
+# Coverity Scan
+coverity/
+
+# NDepend
+NDependOut/
+
+# Precompiled files
+*.dll
+*.exe
+*.log
+
+# Build artifacts
+build/
+
+# Publish output
+publish/
+
+# Logs
+*.log

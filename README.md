@@ -50,8 +50,8 @@ A C# application that automatically hides the Windows taskbar(s) when not in use
 1. **Clone the Repository**:
 
    ```bash
-   git clone https://gitlab.com/yourusername/taskbar-hider.git
-   cd taskbar-hider
+   git clone https://github.com/spyd3r83/TaskbarDelayApp.git
+   cd TaskbarDelayApp
    ```
 
 2. **Open the Project**:

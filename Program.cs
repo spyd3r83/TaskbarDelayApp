@@ -34,6 +34,7 @@ namespace TaskbarHider
         [DllImport("shell32.dll", CharSet = CharSet.Auto)]
         static extern uint SHAppBarMessage(uint dwMessage, [In, Out] ref APPBARDATA pData);
 
+        // Constants
         const int SW_HIDE = 0;
         const int SW_SHOW = 5;
 
@@ -43,8 +44,18 @@ namespace TaskbarHider
         const int ABS_AUTOHIDE = 1;
         const int ABS_ALWAYSONTOP = 2;
 
+        // Flag to control the exit of the main loop
+        static bool isExiting = false;
+
+        // Lists to keep track of taskbars and full-screen windows
         static List<TaskbarInfo> taskbars = new List<TaskbarInfo>();
+        static List<FullScreenWindow> fullScreenWindows = new List<FullScreenWindow>();
+
+        // Timers for hiding and showing taskbars
         static DateTime? hideTime = null;
+        static DateTime? showTime = null; // For the 0.7-second delay
+
+        // NotifyIcon for the system tray
         static NotifyIcon notifyIcon;
 
         [STAThread]
@@ -59,6 +70,9 @@ namespace TaskbarHider
             {
                 ShowWindow(handle, SW_HIDE);
             }
+
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
 
             // Enumerate all taskbars and save their original auto-hide states
             EnumWindows(EnumWindowsCallback, IntPtr.Zero);
@@ -85,6 +99,11 @@ namespace TaskbarHider
             {
                 Application.DoEvents(); // Process Windows messages
 
+                if (isExiting)
+                {
+                    break; // Exit the loop gracefully
+                }
+
                 POINT cursorPos;
                 if (GetCursorPos(out cursorPos))
                 {
@@ -95,26 +114,38 @@ namespace TaskbarHider
                         if (IsCursorOverTaskbar(cursorPos, taskbar))
                         {
                             cursorOverAnyTaskbar = true;
-                            break; // No need to check other taskbars
+                            break;
                         }
                     }
 
                     if (cursorOverAnyTaskbar)
                     {
-                        // Cursor is over a taskbar, show all taskbars and cancel hide timer
-                        foreach (var taskbar in taskbars)
+                        if (showTime == null)
                         {
-                            if (!taskbar.IsVisible)
-                            {
-                                SetTaskbarAutoHide(taskbar.Handle, false);
-                                taskbar.IsVisible = true;
-                            }
+                            showTime = DateTime.Now.AddSeconds(0.7);
                         }
-                        hideTime = null; // Cancel any pending hide action
+                        if (DateTime.Now >= showTime)
+                        {
+                            // Cursor is over the taskbar edge, remove full-screen windows and disable auto-hide
+                            foreach (var taskbar in taskbars)
+                            {
+                                if (!taskbar.IsVisible)
+                                {
+                                    SetTaskbarAutoHide(taskbar.Handle, false);
+                                    taskbar.IsVisible = true;
+                                }
+                            }
+                            // Close full-screen windows
+                            CloseFullScreenWindows();
+
+                            hideTime = null; // Cancel any pending hide action
+                            showTime = null;
+                        }
                     }
                     else
                     {
-                        // Cursor is not over any taskbar
+                        showTime = null; // Reset showTime when cursor leaves the edge
+
                         if (hideTime == null)
                         {
                             // Start the hide timer
@@ -122,7 +153,7 @@ namespace TaskbarHider
                         }
                         else if (DateTime.Now >= hideTime)
                         {
-                            // Time to hide all taskbars
+                            // Time to enable auto-hide and create full-screen windows
                             foreach (var taskbar in taskbars)
                             {
                                 if (taskbar.IsVisible)
@@ -131,6 +162,9 @@ namespace TaskbarHider
                                     taskbar.IsVisible = false;
                                 }
                             }
+                            // Create full-screen windows
+                            CreateFullScreenWindows();
+
                             hideTime = null;
                         }
                     }
@@ -144,15 +178,9 @@ namespace TaskbarHider
         {
             notifyIcon = new NotifyIcon();
 
-            // Option A: Use SystemIcons.Application (requires System.Drawing)
-            // notifyIcon.Icon = SystemIcons.Application;
-
-            // Option B: Use the application's associated icon
+            // Use the application's associated icon
             string exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
             notifyIcon.Icon = Icon.ExtractAssociatedIcon(exePath);
-
-            // Option C: Use a custom icon file (ensure the icon file is included in the project)
-            // notifyIcon.Icon = new Icon("app.ico");
 
             notifyIcon.Visible = true;
             notifyIcon.Text = "Taskbar Hider";
@@ -169,8 +197,9 @@ namespace TaskbarHider
         private static void ExitMenuItem_Click(object sender, EventArgs e)
         {
             notifyIcon.Visible = false;
+            isExiting = true;
             Application.Exit(); // This triggers OnProcessExit
-            Environment.Exit(0);
+            // Removed Environment.Exit(0); to allow graceful exit
         }
 
         static void OnProcessExit(object sender, EventArgs e)
@@ -179,7 +208,11 @@ namespace TaskbarHider
             foreach (var taskbar in taskbars)
             {
                 SetTaskbarAutoHide(taskbar.Handle, taskbar.OriginalAutoHideState == ABS_AUTOHIDE);
+                taskbar.IsVisible = true;
             }
+
+            // Close full-screen windows
+            CloseFullScreenWindows();
         }
 
         static void SetTaskbarAutoHide(IntPtr taskbarHandle, bool enableAutoHide)
@@ -203,12 +236,17 @@ namespace TaskbarHider
                 RECT rect;
                 if (GetWindowRect(hWnd, out rect))
                 {
+                    // Determine which screen the taskbar is on
+                    Rectangle taskbarRectangle = new Rectangle(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+                    Screen taskbarScreen = Screen.FromRectangle(taskbarRectangle);
+
                     var taskbarInfo = new TaskbarInfo
                     {
                         Handle = hWnd,
                         Rect = rect,
                         IsVisible = true,
-                        OriginalAutoHideState = ABS_ALWAYSONTOP // Will be updated
+                        OriginalAutoHideState = ABS_ALWAYSONTOP, // Will be updated
+                        Screen = taskbarScreen
                     };
 
                     taskbars.Add(taskbarInfo);
@@ -221,8 +259,52 @@ namespace TaskbarHider
         static bool IsCursorOverTaskbar(POINT cursorPos, TaskbarInfo taskbar)
         {
             RECT rect = taskbar.Rect;
-            return cursorPos.X >= rect.left && cursorPos.X <= rect.right &&
-                   cursorPos.Y >= rect.top && cursorPos.Y <= rect.bottom;
+            Screen screen = taskbar.Screen;
+            Rectangle screenBounds = screen.Bounds;
+
+            // Determine the orientation of the taskbar
+            bool isTop = rect.top == screenBounds.Top;
+            bool isBottom = rect.bottom == screenBounds.Bottom;
+            bool isLeft = rect.left == screenBounds.Left;
+            bool isRight = rect.right == screenBounds.Right;
+
+            // Check if the cursor is within the taskbar's bounds
+            if (isTop || isBottom)
+            {
+                return cursorPos.Y >= rect.top && cursorPos.Y <= rect.bottom &&
+                       cursorPos.X >= screenBounds.Left && cursorPos.X <= screenBounds.Right;
+            }
+            else if (isLeft || isRight)
+            {
+                return cursorPos.X >= rect.left && cursorPos.X <= rect.right &&
+                       cursorPos.Y >= screenBounds.Top && cursorPos.Y <= screenBounds.Bottom;
+            }
+
+            return false;
+        }
+
+        static void CreateFullScreenWindows()
+        {
+            if (fullScreenWindows.Count > 0)
+                return;
+
+            // Enumerate monitors and create a full-screen window for each
+            Screen[] screens = Screen.AllScreens;
+            foreach (var screen in screens)
+            {
+                FullScreenWindow fsWindow = new FullScreenWindow(screen);
+                fsWindow.Show();
+                fullScreenWindows.Add(fsWindow);
+            }
+        }
+
+        static void CloseFullScreenWindows()
+        {
+            foreach (var fsWindow in fullScreenWindows)
+            {
+                fsWindow.Close();
+            }
+            fullScreenWindows.Clear();
         }
 
         // Supporting structs and classes
@@ -259,6 +341,72 @@ namespace TaskbarHider
             public RECT Rect;
             public bool IsVisible;
             public int OriginalAutoHideState;
+            public Screen Screen; // Reference to the screen where the taskbar is located
+        }
+
+        public class FullScreenWindow : Form
+        {
+            public FullScreenWindow(Screen screen)
+            {
+                this.FormBorderStyle = FormBorderStyle.None;
+                this.ShowInTaskbar = false;
+                this.StartPosition = FormStartPosition.Manual;
+                this.Bounds = screen.Bounds;
+                this.BackColor = Color.Black;
+                this.TopMost = true;
+
+                // Make the window fully opaque for debugging
+                this.Opacity = 0.01;
+
+                // Optionally, add a label for debugging
+                Label debugLabel = new Label();
+                debugLabel.Text = "Full-Screen Window Active";
+                debugLabel.Font = new Font("Arial", 24, FontStyle.Bold);
+                debugLabel.ForeColor = Color.White;
+                debugLabel.BackColor = Color.Transparent;
+                debugLabel.AutoSize = true;
+                debugLabel.Location = new Point(50, 50); // Adjust position as needed
+                this.Controls.Add(debugLabel);
+
+                // Make the window click-through after debugging
+                // To revert, set Opacity to 0.01 and re-enable WS_EX_TRANSPARENT
+
+                // Uncomment the following lines after debugging to make the window click-through
+                this.Opacity = 0.01; // Almost transparent
+                int exStyle = GetWindowLong(this.Handle, GWL_EXSTYLE);
+                exStyle |= WS_EX_LAYERED | WS_EX_TRANSPARENT;
+                SetWindowLong(this.Handle, GWL_EXSTYLE, exStyle);
+
+                // Force the window to refresh and show the label
+                this.Refresh();
+            }
+
+            protected override bool ShowWithoutActivation => true;
+
+            protected override CreateParams CreateParams
+            {
+                get
+                {
+                    CreateParams baseParams = base.CreateParams;
+                    baseParams.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
+                    return baseParams;
+                }
+            }
+
+            private const int GWL_EXSTYLE = -20;
+            private const int WS_EX_LAYERED = 0x00080000;
+            private const int WS_EX_TRANSPARENT = 0x00000020;
+
+            [DllImport("user32.dll", SetLastError = true)]
+            static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+            [DllImport("user32.dll")]
+            static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+            protected override void OnFormClosing(FormClosingEventArgs e)
+            {
+                base.OnFormClosing(e);
+            }
         }
     }
 }
